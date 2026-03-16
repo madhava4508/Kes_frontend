@@ -64,3 +64,6 @@ pnpm-lock.yaml
 # Local overrides
 .env.local.js
 .envrc
+
+# Windows reserved device names
+nul

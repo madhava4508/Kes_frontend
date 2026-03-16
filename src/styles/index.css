@@ -1,0 +1,232 @@
+@import './fonts.css';
+@import './tailwind.css';
+@import './theme.css';
+
+/* ===== SecureVault AI - Global Animations & Utilities ===== */
+
+/* Dotted grid background pattern — subtle neutral dots */
+.dotted-grid {
+  background-image: radial-gradient(circle, rgba(255, 255, 255, 0.08) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+
+.dotted-grid-subtle {
+  background-image: radial-gradient(circle, rgba(255, 255, 255, 0.04) 1px, transparent 1px);
+  background-size: 28px 28px;
+}
+
+/* ===== Keyframe Animations ===== */
+
+@keyframes sv-pulse {
+  0%, 100% { opacity: 0.3; transform: scale(1); }
+  50% { opacity: 1; transform: scale(1.2); }
+}
+
+@keyframes sv-float {
+  0%, 100% { transform: translateY(0px); }
+  50% { transform: translateY(-20px); }
+}
+
+/* Faster: 250ms */
+@keyframes sv-fade-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* Faster: 300ms */
+@keyframes sv-fade-in-up {
+  from { opacity: 0; transform: translateY(14px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes sv-fade-in-scale {
+  from { opacity: 0; transform: scale(0.97); }
+  to   { opacity: 1; transform: scale(1); }
+}
+
+@keyframes sv-slide-in-left {
+  from { opacity: 0; transform: translateX(-10px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes sv-shimmer {
+  0%   { background-position: -200% 0; }
+  100% { background-position:  200% 0; }
+}
+
+@keyframes sv-glow-pulse {
+  0%, 100% { box-shadow: 0 0 0px rgba(255, 255, 255, 0); }
+  50%       { box-shadow: 0 0 20px rgba(255, 255, 255, 0.06); }
+}
+
+@keyframes sv-chat-in {
+  from { opacity: 0; transform: translateY(6px) scale(0.99); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+/* Integration card border shimmer sweep */
+@keyframes sv-border-sweep {
+  0%   { opacity: 0; transform: translateX(-100%); }
+  50%  { opacity: 1; }
+  100% { opacity: 0; transform: translateX(100%); }
+}
+
+/* ===== Animation Utility Classes ===== */
+
+/* 250ms — snappy, not jarring */
+.animate-fade-in {
+  animation: sv-fade-in 0.25s ease-out both;
+}
+
+/* 300ms — slight stagger room */
+.animate-fade-in-up {
+  animation: sv-fade-in-up 0.3s ease-out both;
+}
+
+.animate-fade-in-scale {
+  animation: sv-fade-in-scale 0.2s ease-out both;
+}
+
+.animate-slide-in-left {
+  animation: sv-slide-in-left 0.2s ease-out both;
+}
+
+.animate-chat-in {
+  animation: sv-chat-in 0.2s ease-out both;
+}
+
+.animate-glow-pulse {
+  animation: sv-glow-pulse 3s ease-in-out infinite;
+}
+
+/* Shimmer loading effect */
+.shimmer {
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0)    0%,
+    rgba(255, 255, 255, 0.03) 50%,
+    rgba(255, 255, 255, 0)    100%
+  );
+  background-size: 200% 100%;
+  animation: sv-shimmer 2s ease-in-out infinite;
+}
+
+/* Stagger delay utilities — tightened for faster sequences */
+.stagger-1 { animation-delay: 0.04s; }
+.stagger-2 { animation-delay: 0.08s; }
+.stagger-3 { animation-delay: 0.12s; }
+.stagger-4 { animation-delay: 0.16s; }
+.stagger-5 { animation-delay: 0.20s; }
+.stagger-6 { animation-delay: 0.24s; }
+.stagger-7 { animation-delay: 0.28s; }
+.stagger-8 { animation-delay: 0.32s; }
+
+/* ===== Enhanced Hover Transitions ===== */
+
+/* Smooth card hover with subtle elevation — 200ms */
+.hover-elevate {
+  transition: transform   0.2s cubic-bezier(0.4, 0, 0.2, 1),
+              box-shadow  0.2s cubic-bezier(0.4, 0, 0.2, 1),
+              border-color 0.2s ease;
+}
+.hover-elevate:hover {
+  transform:  translateY(-2px);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+}
+
+/* Button hover transition — 200ms */
+.hover-glow {
+  transition: box-shadow       0.2s cubic-bezier(0.4, 0, 0.2, 1),
+              transform        0.15s cubic-bezier(0.4, 0, 0.2, 1),
+              background-color 0.15s ease;
+}
+.hover-glow:hover {
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
+}
+
+/* Smooth scale on hover — 180ms */
+.hover-scale {
+  transition: transform 0.18s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.hover-scale:hover {
+  transform: scale(1.02);
+}
+
+/* ===== Integration Card Component ===== */
+
+/* Hero title — subtle text shadow for depth against animated background */
+.hero-title {
+  text-shadow:
+    0 0 60px rgba(255, 255, 255, 0.06),
+    0 2px 4px rgba(0, 0, 0, 0.5);
+}
+
+.integration-card {
+  position: relative;
+  overflow: hidden;
+  background: #1C1C1C;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: var(--radius);
+  transition: transform      0.2s cubic-bezier(0.4, 0, 0.2, 1),
+              box-shadow     0.2s cubic-bezier(0.4, 0, 0.2, 1),
+              border-color   0.2s ease,
+              background     0.2s ease;
+}
+
+/* Subtle lift on hover */
+.integration-card:hover {
+  transform:    translateY(-2px);
+  box-shadow:   0 4px 20px rgba(0, 0, 0, 0.15);
+  border-color: rgba(255, 255, 255, 0.12);
+  background:   #222222;
+}
+
+/* Sweep highlight pseudo-element */
+.integration-card::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    135deg,
+    rgba(255, 255, 255, 0) 0%,
+    rgba(255, 255, 255, 0.02) 50%,
+    rgba(255, 255, 255, 0) 100%
+  );
+  opacity: 0;
+  transition: opacity 0.2s ease;
+  pointer-events: none;
+}
+.integration-card:hover::before {
+  opacity: 1;
+}
+
+/* Top edge inner highlight */
+.integration-card::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 10%;
+  right: 10%;
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(255, 255, 255, 0.12),
+    transparent
+  );
+  opacity: 0;
+  transition: opacity 0.2s ease;
+  pointer-events: none;
+}
+.integration-card:hover::after {
+  opacity: 1;
+}
+
+/* Icon inside integration card — subtle scale on card hover */
+.integration-card:hover .integration-icon {
+  transform: scale(1.06);
+}
+
+.integration-icon {
+  transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}

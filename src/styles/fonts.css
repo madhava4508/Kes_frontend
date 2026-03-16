@@ -1,0 +1,15 @@
+/* 
+ * SecureVault AI Typography System
+ * Primary font: Inter (Google Fonts)
+ */
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+
+:root {
+  --font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  --font-display: 800;
+  --font-hero: 700;
+  --font-heading: 600;
+  --font-label: 500;
+  --font-body: 400;
+}
