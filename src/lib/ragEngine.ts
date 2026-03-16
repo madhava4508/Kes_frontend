@@ -302,7 +302,7 @@ export async function query(question: string, topK = 5): Promise<RAGResult> {
   const prompt = `You are a document assistant. Answer questions strictly based on the provided context only.
 
 Rules:
-- Never use outside knowledge or make assumptions beyond what is in the context.
+- Refrain from answering questions for which information is not provided in the context.
 
 Context:
 ${context || ""}
