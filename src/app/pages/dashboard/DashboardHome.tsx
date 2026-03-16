@@ -1,3 +1,4 @@
+import { useNavigate } from "react-router";
 import { Card } from "../../components/Card";
 import { Badge } from "../../components/Badge";
 import { 
@@ -11,6 +12,7 @@ import {
 import { recentFiles, storage, dashboardStats } from "../../../data/mockData";
 
 export function DashboardHome() {
+  const navigate = useNavigate();
 
   return (
     <div className="p-10">
@@ -71,7 +73,7 @@ export function DashboardHome() {
 
       {/* Quick Actions */}
       <div className="grid md:grid-cols-3 gap-6 mb-10">
-        <Card hover className="cursor-pointer animate-fade-in-up stagger-5">
+        <Card hover className="cursor-pointer animate-fade-in-up stagger-5" onClick={() => navigate("/dashboard/ai-assistant")}>
           <div className="flex items-center gap-4">
             <div className="p-4 bg-white/5 rounded-[16px]">
               <Upload className="w-8 h-8 text-foreground" />
@@ -83,7 +85,7 @@ export function DashboardHome() {
           </div>
         </Card>
 
-        <Card hover className="cursor-pointer animate-fade-in-up stagger-6">
+        <Card hover className="cursor-pointer animate-fade-in-up stagger-6" onClick={() => navigate("/dashboard/ai-assistant")}>
           <div className="flex items-center gap-4">
             <div className="p-4 bg-white/5 rounded-[16px]">
               <FileText className="w-8 h-8 text-foreground" />

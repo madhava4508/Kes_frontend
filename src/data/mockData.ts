@@ -24,6 +24,8 @@ export interface Message {
   text: string;
   timestamp: string;
   relatedFiles?: string[];
+  /** RAG source chunks returned with AI answers */
+  sourceChunks?: { index: number; text: string; score: number }[];
 }
 
 export interface SearchResult {
@@ -108,34 +110,8 @@ export const initialMessages: Message[] = [
   {
     id: 1,
     sender: "ai",
-    text: "Hello! I'm your SecureVault AI assistant. I can help you find information in your encrypted documents. What would you like to know?",
-    timestamp: "10:00 AM",
-  },
-  {
-    id: 2,
-    sender: "user",
-    text: "What were the key points from the Q1 financial report?",
-    timestamp: "10:02 AM",
-  },
-  {
-    id: 3,
-    sender: "ai",
-    text: "Based on your Q1 Financial Report, here are the key points:\n\n1. Revenue increased by 23% compared to Q4\n2. Operating costs were reduced by 12%\n3. Net profit margin improved to 18.5%\n4. Customer acquisition cost decreased by 8%\n\nWould you like me to provide more details on any of these areas?",
-    timestamp: "10:02 AM",
-    relatedFiles: ["Q1 Financial Report.pdf"],
-  },
-  {
-    id: 4,
-    sender: "user",
-    text: "Can you compare this with the project proposal budget?",
-    timestamp: "10:04 AM",
-  },
-  {
-    id: 5,
-    sender: "ai",
-    text: "I've analyzed both documents. The Q1 revenue aligns well with the project proposal's revenue projections. However, the actual operating costs came in 5% lower than the proposal estimated, which contributed to the better profit margin.\n\nThe proposal projected 15% profit margin, but we achieved 18.5%, largely due to cost optimization efforts.",
-    timestamp: "10:04 AM",
-    relatedFiles: ["Q1 Financial Report.pdf", "Project Proposal.docx"],
+    text: "Hello! I'm your SecureVault AI assistant. Upload a document and ask me anything about it. I'll search through the content and give you answers based on what's in the document.",
+    timestamp: "—",
   },
 ];
 

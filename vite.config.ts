@@ -17,6 +17,18 @@ export default defineConfig({
     },
   },
 
+  build: {
+    chunkSizeWarningLimit: 6500,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          'webllm': ['@mlc-ai/web-llm'],
+          'pdfjs': ['pdfjs-dist'],
+        },
+      },
+    },
+  },
+
   // File types to support raw imports. Never add .css, .tsx, or .ts files to this.
   assetsInclude: ['**/*.svg', '**/*.csv'],
 })
