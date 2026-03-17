@@ -6,18 +6,20 @@ import {
   Search, 
   Settings, 
   LogOut,
-  Shield
+  Shield,
+  History,
 } from "lucide-react";
 
 export function DashboardLayout() {
   const location = useLocation();
   
   const navigation = [
-    { name: "Dashboard", path: "/dashboard", icon: LayoutDashboard },
-    { name: "Vault", path: "/dashboard/vault", icon: FolderLock },
-    { name: "AI Assistant", path: "/dashboard/ai-assistant", icon: MessageSquare },
-    { name: "Search", path: "/dashboard/search", icon: Search },
-    { name: "Settings", path: "/dashboard/settings", icon: Settings },
+    { name: "Dashboard",    path: "/dashboard",                icon: LayoutDashboard },
+    { name: "Vault",        path: "/dashboard/vault",          icon: FolderLock },
+    { name: "AI Assistant", path: "/dashboard/ai-assistant",   icon: MessageSquare },
+    { name: "History",      path: "/dashboard/history",        icon: History },
+    { name: "Search",       path: "/dashboard/search",         icon: Search },
+    { name: "Settings",     path: "/dashboard/settings",       icon: Settings },
   ];
 
   const isActive = (path: string) => {

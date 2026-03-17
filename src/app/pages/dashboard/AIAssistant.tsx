@@ -29,6 +29,7 @@ import {
   consumePendingFile,
   type InitPhase,
 } from "../../../lib/ragEngine";
+import { insertChats, uploadToNgrok } from "../../../lib/chatApi";
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
@@ -131,8 +132,8 @@ export function AIAssistant() {
 
   useEffect(() => {
     console.log("[AIAssistant] modelPhase changed to:", modelPhase);
-    // TF-IDF retriever is instant, so process pending file as soon as we're past idle
-    if (modelPhase !== "idle") {
+    // Embedding model must be loaded before we can process files
+    if (modelPhase === "retriever-ready" || modelPhase === "loading-llm" || modelPhase === "ready") {
       const pending = consumePendingFile();
       console.log("[AIAssistant] Checking pending file:", pending?.name ?? "none");
       if (pending) {
@@ -152,7 +153,14 @@ export function AIAssistant() {
     // Reset for re-uploads
     if (fileInputRef.current) fileInputRef.current.value = "";
 
+    // Local RAG processing (existing pipeline — unchanged)
     await processFile(file);
+
+    // Also send the file to the ngrok upload endpoint — fire-and-forget,
+    // never blocks or affects local embedding / Q&A.
+    uploadToNgrok(file)
+      .then(() => console.log("[AIAssistant] ngrok upload succeeded for:", file.name))
+      .catch((err) => console.warn("[AIAssistant] ngrok upload failed (non-fatal):", err));
   };
 
   const handleClearDoc = () => {
@@ -211,6 +219,15 @@ export function AIAssistant() {
           score: s.score,
         })),
       });
+
+      // Persist Q&A to KES — fire-and-forget, never blocks the UI
+      insertChats("yashas", [{ question: text, answer: result.answer }])
+        .then((res) => {
+          console.log("[ChatAPI] Inserted:", res.inserted_rows, "row(s) — status:", res.status);
+        })
+        .catch((err) => {
+          console.warn("[ChatAPI] Failed to persist chat:", err);
+        });
     } catch (err) {
       addMessage({
         sender: "ai",
@@ -271,9 +288,11 @@ export function AIAssistant() {
                 ? "Upload a document and ask questions"
                 : modelPhase === "retriever-ready" || modelPhase === "loading-llm"
                   ? "Upload a document now — LLM still loading for Q&A..."
-                  : modelPhase === "error"
-                    ? modelDetail
-                    : "Initialising..."}
+                  : modelPhase === "loading-retriever"
+                    ? "Loading embedding model..."
+                    : modelPhase === "error"
+                      ? modelDetail
+                      : "Initialising..."}
             </p>
           </div>
           {statusBadge()}
@@ -409,12 +428,12 @@ export function AIAssistant() {
               className="hidden"
             />
 
-            {/* Upload button — always enabled (TF-IDF is instant) */}
+            {/* Upload button — enabled once embedding model is loaded */}
             <button
               onClick={() => fileInputRef.current?.click()}
-              disabled={isLoadingDoc}
+              disabled={isLoadingDoc || !isEmbedderReady()}
               className="px-4 py-3 bg-white/5 hover:bg-white/10 text-foreground rounded-[12px] transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
-              title="Upload document (.txt, .pdf, .md, .json, .csv)"
+              title={isEmbedderReady() ? "Upload document (.txt, .pdf, .md, .json, .csv)" : "Embedding model still loading..."}
             >
               <Upload className="w-5 h-5" />
             </button>
@@ -456,7 +475,9 @@ export function AIAssistant() {
               ? "All processing happens in your browser. Your documents never leave your device."
               : modelPhase === "retriever-ready" || modelPhase === "loading-llm"
                 ? "You can upload files now. LLM is still loading for Q&A..."
-                : "Initialising — this may take a moment on first visit."}
+                : modelPhase === "loading-retriever"
+                  ? "Loading embedding model (~23MB)..."
+                  : "Initialising — this may take a moment on first visit."}
           </p>
         </div>
       </div>

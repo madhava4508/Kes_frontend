@@ -22,6 +22,7 @@ import {
   setActiveFile,
   type StoredFile,
 } from "../../../lib/ragEngine";
+import { uploadToNgrok } from "../../../lib/chatApi";
 
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -83,6 +84,12 @@ export function Vault() {
     const file = e.target.files?.[0];
     if (!file) return;
     if (fileInputRef.current) fileInputRef.current.value = "";
+
+    // Upload the file to the KES /upload endpoint — fire-and-forget
+    uploadToNgrok(file, { folder_action: "new", folder_name: "my_folder" })
+      .then(() => console.log("[Vault] ngrok upload succeeded for:", file.name))
+      .catch((err) => console.warn("[Vault] ngrok upload failed (non-fatal):", err));
+
     // Store the file and navigate to AI Assistant for processing
     setPendingFile(file);
     navigate("/dashboard/ai-assistant");

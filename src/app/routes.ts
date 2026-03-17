@@ -6,6 +6,7 @@ import { Vault } from "./pages/dashboard/Vault";
 import { AIAssistant } from "./pages/dashboard/AIAssistant";
 import { Search } from "./pages/dashboard/Search";
 import { Settings } from "./pages/dashboard/Settings";
+import { ChatHistory } from "./pages/dashboard/ChatHistory";
 
 export const router = createBrowserRouter([
   {
@@ -19,6 +20,7 @@ export const router = createBrowserRouter([
       { index: true, Component: DashboardHome },
       { path: "vault", Component: Vault },
       { path: "ai-assistant", Component: AIAssistant },
+      { path: "history", Component: ChatHistory },
       { path: "search", Component: Search },
       { path: "settings", Component: Settings },
     ],

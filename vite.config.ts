@@ -23,6 +23,7 @@ export default defineConfig({
       output: {
         manualChunks: {
           'webllm': ['@mlc-ai/web-llm'],
+          'transformers': ['@huggingface/transformers'],
           'pdfjs': ['pdfjs-dist'],
         },
       },

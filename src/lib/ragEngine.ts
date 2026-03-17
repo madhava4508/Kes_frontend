@@ -3,20 +3,36 @@
 //
 // Full retrieval-augmented generation pipeline running entirely in the browser:
 //   1. Text extraction (PDF via pdfjs-dist, plain text for .txt/.md/.csv/.json)
-//   2. Chunking (sentence-based with overlap)
-//   3. TF-IDF retrieval (pure JS, zero dependencies, no CDN)
+//   2. Chunking (sentence-based with overlap, ~500 chars)
+//   3. Semantic retrieval via transformer embeddings (all-MiniLM-L6-v2)
 //   4. LLM generation via WebLLM (Llama-3.2-1B-Instruct, WebGPU)
 //
+// All embeddings are stored in memory. No backend, no external vector DB.
 // File store: uploaded files are kept in-memory for the session.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import * as webllm from "@mlc-ai/web-llm";
 import * as pdfjsLib from "pdfjs-dist";
+import { pipeline, env, type FeatureExtractionPipeline } from "@huggingface/transformers";
+import { insertEmbedding, fetchEmbeddingsFromServer, type ServerEmbeddingEntry } from "./chatApi";
 // @ts-ignore — Vite-specific ?url suffix
 import pdfjsWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorkerUrl;
+
+// ── Configure transformers.js to use locally bundled model files ──────────────
+//
+// HuggingFace CDN returns a 307 redirect whose Location header has
+// Access-Control-Allow-Origin: https://huggingface.co — which the browser
+// refuses to follow from localhost. We ship the model files in /public/models/
+// and point the library at them so every fetch is same-origin.
+env.allowRemoteModels = false;
+env.allowLocalModels = true;
+// In browser context, localModelPath must be a base URL path (not a FS path)
+env.localModelPath = "/models/";
+
 console.log("[RAG] Module loaded. pdf.js workerSrc:", pdfjsWorkerUrl);
+console.log("[RAG] transformers env — localModelPath:", env.localModelPath, "allowRemote:", env.allowRemoteModels);
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -51,11 +67,14 @@ export interface StoredFile {
   uploadedAt: Date;
   rawText: string;
   chunks: string[];
+  /** Embedding vectors for each chunk (populated after embedding) */
+  embeddings: number[][];
 }
 
 // ── Singleton state ───────────────────────────────────────────────────────────
 
 let llmEngine: webllm.MLCEngine | null = null;
+let embeddingPipeline: FeatureExtractionPipeline | null = null;
 let currentPhase: InitPhase = "idle";
 let initPromise: Promise<void> | null = null;
 
@@ -65,31 +84,172 @@ const fileStore: Map<string, StoredFile> = new Map();
 // Currently active file for Q&A
 let activeFileId = "";
 
-// TF-IDF index for the active file
-let tfidfIndex: TFIDFIndex | null = null;
+// Server-fetched embedding+chunk pairs — loaded from KES after retriever-ready.
+// Because the server now returns chunk text alongside vectors, these can be used
+// as a full synthetic StoredFile, enabling Q&A without re-uploading documents.
+let serverEmbeddings: ServerEmbeddingEntry[] = [];
+
+// Synthetic file ID used when the vector store is rebuilt from server data
+const SERVER_FILE_ID = "__server_restored__";
+
+// ── Embedding Model ───────────────────────────────────────────────────────────
+
+const EMBEDDING_MODEL = "Xenova/all-MiniLM-L6-v2";
+
+/**
+ * Initialise the embedding model (all-MiniLM-L6-v2).
+ * Model files are served locally from /public/models/ — no CDN required.
+ */
+async function initEmbeddingModel(): Promise<void> {
+  if (embeddingPipeline) return;
+
+  console.log("[RAG] Loading embedding model:", EMBEDDING_MODEL);
+  embeddingPipeline = await pipeline("feature-extraction", EMBEDDING_MODEL, {
+    // Use default WASM backend (works in all browsers)
+    // Model files are fetched from HuggingFace CDN and cached
+  });
+  console.log("[RAG] Embedding model loaded successfully");
+}
+
+/**
+ * Generate embeddings for an array of text chunks.
+ * Uses mean pooling + L2 normalisation.
+ * Each embedding is also sent to the backend with its chunk text (fire-and-forget).
+ * Local storage always succeeds even if the API call fails.
+ */
+async function embedChunks(chunks: string[]): Promise<number[][]> {
+  if (!embeddingPipeline) throw new Error("Embedding model not initialised");
+
+  console.log("[RAG] Embedding", chunks.length, "chunks...");
+  const embeddings: number[][] = [];
+
+  // Process one chunk at a time so we can send each embedding individually
+  for (let i = 0; i < chunks.length; i++) {
+    const chunkText = chunks[i];
+
+    console.log(
+      `[RAG] Embedding chunk ${i + 1}/${chunks.length}: "${chunkText.slice(0, 60)}…"`,
+    );
+
+    const result = await embeddingPipeline(chunkText, {
+      pooling: "mean",
+      normalize: true,
+    });
+
+    // Tensor shape: [1, embedding_dim] → extract first row as plain number[]
+    const data = result.tolist() as number[][];
+    const vec = Array.from(data[0]); // explicit Array.from for Float32Array safety
+    embeddings.push(vec);
+
+    console.log(`[RAG] Chunk ${i} embedded — dim=${vec.length}. Sending to server...`);
+    console.log(`[RAG] Sending chunk text: "${chunkText.slice(0, 80)}"`);
+
+    // Send to backend with chunk text — fire-and-forget, never blocks local RAG
+    insertEmbedding("yashas", vec, chunkText)
+      .then(() => {
+        console.log(`[RAG] Chunk ${i} stored on server OK`);
+      })
+      .catch((err) => {
+        console.warn(`[RAG] Failed to send embedding for chunk ${i} to server:`, err);
+      });
+  }
+
+  console.log("[RAG] All chunks embedded. Dimensions:", embeddings[0]?.length ?? 0);
+  return embeddings;
+}
+
+/**
+ * Generate embedding for a single query string.
+ */
+async function embedQuery(queryText: string): Promise<number[]> {
+  if (!embeddingPipeline) throw new Error("Embedding model not initialised");
+
+  const result = await embeddingPipeline(queryText, {
+    pooling: "mean",
+    normalize: true,
+  });
+
+  // Shape: [1, embedding_dim] → extract first row
+  const data = result.tolist() as number[][];
+  return data[0];
+}
+
+/**
+ * Compute cosine similarity between two vectors.
+ * Since vectors are L2-normalised, this is just the dot product.
+ */
+function cosineSimilarity(vecA: number[], vecB: number[]): number {
+  let dot = 0;
+  for (let i = 0; i < vecA.length; i++) {
+    dot += vecA[i] * vecB[i];
+  }
+  return dot;
+}
+
+/**
+ * Retrieve the top-K most relevant chunks using cosine similarity
+ * between the query embedding and stored chunk embeddings.
+ */
+async function retrieveRelevantChunks(
+  queryText: string,
+  chunks: string[],
+  embeddings: number[][],
+  topK: number,
+): Promise<SourceChunk[]> {
+  console.log("[RAG] Embedding query:", queryText);
+  const queryVec = await embedQuery(queryText);
+  console.log("[RAG] Query embedding dimensions:", queryVec.length);
+
+  // Score each chunk
+  const scored: SourceChunk[] = embeddings.map((chunkVec, i) => ({
+    index: i,
+    text: chunks[i],
+    score: cosineSimilarity(queryVec, chunkVec),
+  }));
+
+  // Sort by descending similarity
+  scored.sort((a, b) => b.score - a.score);
+
+  const topChunks = scored.slice(0, topK).filter((s) => s.score > 0);
+
+  console.log("[RAG] Top-K retrieval results:");
+  topChunks.forEach((s, i) => {
+    console.log(`  [${i}] score=${s.score.toFixed(4)} chunk#${s.index}: "${s.text.substring(0, 80)}..."`);
+  });
+
+  return topChunks;
+}
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
 /**
- * Initialise the engine. The TF-IDF retriever is pure JS (instant),
- * so only the LLM needs downloading.
+ * Initialise the engine:
+ *   1. Load embedding model (Xenova/all-MiniLM-L6-v2, ~23MB)
+ *   2. Load LLM via WebLLM (Llama-3.2-1B-Instruct, ~879MB, requires WebGPU)
  */
 export function initModels(onStatus?: StatusCallback): Promise<void> {
   if (initPromise) return initPromise;
 
   initPromise = (async () => {
     try {
-      // 1. TF-IDF retriever — pure JS, nothing to download
+      // 1. Embedding model
       currentPhase = "loading-retriever";
-      onStatus?.("loading-retriever", "Initialising retriever...");
-      console.log("[RAG] Phase: loading-retriever (TF-IDF — instant)");
+      onStatus?.("loading-retriever", "Loading embedding model (~23MB)...");
+      console.log("[RAG] Phase: loading-retriever");
 
-      // TF-IDF is ready immediately
+      await initEmbeddingModel();
+
       currentPhase = "retriever-ready";
       onStatus?.("retriever-ready", "Retriever ready — you can upload documents now");
       console.log("[RAG] Phase: retriever-ready");
 
-      // 2. LLM (~700 MB download, requires WebGPU)
+      // 1b. Non-blocking: fetch previously stored embeddings from the KES backend.
+      //     Falls back silently — local RAG still works if the API is unreachable.
+      fetchServerEmbeddings("yashas").catch((err) => {
+        console.warn("[RAG] Could not load server embeddings (non-fatal):", err);
+      });
+
+      // 2. LLM (~879 MB download, requires WebGPU)
       const gpu = (navigator as any).gpu;
       console.log("[RAG] WebGPU available:", !!gpu);
       if (!gpu) {
@@ -144,21 +304,76 @@ export function isReady(): boolean {
   return currentPhase === "ready";
 }
 
-/** TF-IDF retriever is always ready (pure JS) — file upload can proceed immediately */
+/** Embedding model is ready — file upload can proceed */
 export function isEmbedderReady(): boolean {
-  return currentPhase !== "idle";
+  return embeddingPipeline !== null;
+}
+
+/**
+ * Fetch all embedding+chunk pairs from KES for a user, cache them, and
+ * restore a synthetic StoredFile in the file store so Q&A works immediately
+ * after page load without re-uploading any document.
+ *
+ * If the server returns 0 valid records (first visit, no uploads yet), the
+ * file store is left empty and the user must upload a document as normal.
+ * Safe to call multiple times — later calls replace the previous cache.
+ */
+export async function fetchServerEmbeddings(userId: string): Promise<void> {
+  const entries = await fetchEmbeddingsFromServer(userId);
+  serverEmbeddings = entries;
+
+  console.log(
+    `[RAG] Server embeddings loaded: ${entries.length} entries for user "${userId}"`,
+  );
+
+  if (entries.length === 0) {
+    console.log("[RAG] No server embeddings — user must upload a document.");
+    return;
+  }
+
+  // Rebuild a synthetic StoredFile from server data so the RAG pipeline has
+  // something to query against without requiring a re-upload.
+  const chunks = entries.map((e) => e.chunk);
+  const embeddings = entries.map((e) => e.embedding);
+
+  const syntheticFile: StoredFile = {
+    id: SERVER_FILE_ID,
+    name: "(restored from server)",
+    type: "text/plain",
+    size: 0,
+    uploadedAt: new Date(),
+    rawText: chunks.join("\n\n"),
+    chunks,
+    embeddings,
+  };
+
+  fileStore.set(SERVER_FILE_ID, syntheticFile);
+  activeFileId = SERVER_FILE_ID;
+
+  console.log(
+    `[RAG] Restored synthetic file from server: ${chunks.length} chunks, dim=${embeddings[0]?.length ?? 0}. Q&A available immediately.`,
+  );
+}
+
+/** Number of embedding+chunk pairs currently cached from the KES server */
+export function getServerEmbeddingCount(): number {
+  return serverEmbeddings.length;
 }
 
 // ── File Store ────────────────────────────────────────────────────────────────
 
 /**
- * Upload a file → extract text → chunk → store in memory → build TF-IDF index.
+ * Upload a file → extract text → chunk → embed → store in memory.
  */
 export async function loadDocument(
   file: File,
   onProgress?: ProgressCallback,
 ): Promise<{ fileName: string; chunkCount: number; fileId: string }> {
   console.log("[RAG] loadDocument:", file.name, file.type, file.size, "bytes");
+
+  if (!embeddingPipeline) {
+    throw new Error("Embedding model not ready yet. Please wait for initialisation.");
+  }
 
   // 1. Extract text
   onProgress?.(0, 1, "Reading file...");
@@ -179,13 +394,18 @@ export async function loadDocument(
   console.log("[RAG] Step 2: chunking...");
   const chunks = chunkText(rawText);
   console.log("[RAG] Created", chunks.length, "chunks");
-  
+
   // DEBUG: Log sample of chunks
   chunks.slice(0, 3).forEach((chunk, i) => {
-    console.log(`[RAG] DEBUG: Chunk ${i}:`, chunk.substring(0, 150));
+    console.log(`[RAG] Chunk ${i}:`, chunk.substring(0, 150));
   });
 
-  // 3. Store
+  // 3. Generate embeddings for all chunks
+  onProgress?.(0, 1, "Generating embeddings...");
+  console.log("[RAG] Step 3: embedding chunks...");
+  const embeddings = await embedChunks(chunks);
+
+  // 4. Store
   const id = `file_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   const stored: StoredFile = {
     id,
@@ -195,12 +415,13 @@ export async function loadDocument(
     uploadedAt: new Date(),
     rawText,
     chunks,
+    embeddings,
   };
   fileStore.set(id, stored);
-  console.log("[RAG] Stored file:", id, file.name, chunks.length, "chunks");
+  console.log("[RAG] Stored file:", id, file.name, chunks.length, "chunks,", embeddings.length, "embeddings");
 
-  // 4. Make it the active file and build TF-IDF index
-  setActiveFile(id);
+  // 5. Make it the active file
+  activeFileId = id;
 
   return { fileName: file.name, chunkCount: chunks.length, fileId: id };
 }
@@ -210,15 +431,7 @@ export function setActiveFile(fileId: string): void {
   const stored = fileStore.get(fileId);
   if (!stored) throw new Error(`File not found: ${fileId}`);
   activeFileId = fileId;
-  tfidfIndex = buildTFIDFIndex(stored.chunks);
-  console.log("[RAG] Active file set:", stored.name, "TF-IDF index built");
-  
-  // DEBUG: Log TF-IDF index details
-  if (tfidfIndex) {
-    console.log("[RAG] DEBUG: TF-IDF index vocab size:", tfidfIndex.vocab.size);
-    console.log("[RAG] DEBUG: TF-IDF index IDF sample (first 10):", Array.from(tfidfIndex.idf).slice(0, 10));
-    console.log("[RAG] DEBUG: Sample words from vocab:", Array.from(tfidfIndex.vocab.keys()).slice(0, 20));
-  }
+  console.log("[RAG] Active file set:", stored.name, "with", stored.embeddings.length, "embeddings");
 }
 
 /** Get all stored files */
@@ -233,17 +446,16 @@ export function removeFile(fileId: string): void {
   fileStore.delete(fileId);
   if (activeFileId === fileId) {
     activeFileId = "";
-    tfidfIndex = null;
   }
 }
 
 export function clearDocument(): void {
   activeFileId = "";
-  tfidfIndex = null;
 }
 
 export function hasDocument(): boolean {
-  return activeFileId !== "" && tfidfIndex !== null;
+  const stored = fileStore.get(activeFileId);
+  return !!stored && stored.embeddings.length > 0;
 }
 
 export function getDocumentName(): string {
@@ -274,27 +486,23 @@ export function consumePendingFile(): File | null {
 
 export async function query(question: string, topK = 5): Promise<RAGResult> {
   if (!llmEngine) throw new Error("LLM not initialised");
-  if (!tfidfIndex) throw new Error("No document loaded");
+  if (!embeddingPipeline) throw new Error("Embedding model not initialised");
 
   const stored = fileStore.get(activeFileId);
   if (!stored) throw new Error("Active file not found");
+  if (stored.embeddings.length === 0) throw new Error("No embeddings for active file");
 
   console.log("[RAG] query:", question);
 
-  // 1. TF-IDF retrieve
-  const scores = tfidfSearch(tfidfIndex, question, stored.chunks);
-  console.log("[RAG] DEBUG: All scores (top 10):", scores.slice(0, 10).map(s => ({ index: s.index, score: s.score.toFixed(4), text: s.text.substring(0, 80) + "..." })));
-  
-  const sources: SourceChunk[] = scores
-    .slice(0, topK)
-    .filter((s) => s.score > 0);
+  // 1. Semantic retrieval using embeddings
+  const sources = await retrieveRelevantChunks(
+    question,
+    stored.chunks,
+    stored.embeddings,
+    topK,
+  );
 
   console.log("[RAG] Retrieved", sources.length, "chunks, top score:", sources[0]?.score ?? 0);
-  
-  // DEBUG: Log each retrieved chunk's text
-  sources.forEach((s, i) => {
-    console.log(`[RAG] DEBUG: Chunk ${i} (score=${s.score.toFixed(4)}):`, s.text.substring(0, 200));
-  });
 
   // 2. Build prompt
   const context = sources.map((s) => s.text).join("\n\n---\n\n");
@@ -302,7 +510,9 @@ export async function query(question: string, topK = 5): Promise<RAGResult> {
   const prompt = `You are a document assistant. Answer questions strictly based on the provided context only.
 
 Rules:
-- Refrain from answering questions for which information is not provided in the context.
+  
+- Never use outside knowledge or make assumptions beyond what is in the context.
+- Keep your answer concise and directly based on the context.
 
 Context:
 ${context || ""}
@@ -312,7 +522,7 @@ Question: ${question}
 Answer:`;
 
   // DEBUG: Log the full prompt being sent to LLM
-  console.log("[RAG] DEBUG: Full prompt being sent to LLM:");
+  console.log("[RAG] Full prompt being sent to LLM:");
   console.log("=".repeat(50));
   console.log(prompt);
   console.log("=".repeat(50));
@@ -327,136 +537,9 @@ Answer:`;
 
   const answer = reply.choices[0].message.content ?? "";
   console.log("[RAG] LLM answer length:", answer.length);
-  console.log("[RAG] DEBUG: Full LLM response:", answer);
+  console.log("[RAG] Full LLM response:", answer);
 
   return { answer, sources };
-}
-
-// ── TF-IDF Implementation ─────────────────────────────────────────────────────
-
-interface TFIDFIndex {
-  /** Vocabulary: word → index */
-  vocab: Map<string, number>;
-  /** IDF values for each vocab word */
-  idf: Float64Array;
-  /** TF-IDF vector for each chunk (sparse, stored as dense for simplicity) */
-  vectors: Float64Array[];
-}
-
-/** Tokenize text into lowercase words, strip punctuation */
-function tokenize(text: string): string[] {
-  return text
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, " ")
-    .split(/\s+/)
-    .filter((w) => w.length > 1);
-}
-
-/** Build a TF-IDF index from chunks */
-function buildTFIDFIndex(chunks: string[]): TFIDFIndex {
-  const n = chunks.length;
-  const tokenized = chunks.map(tokenize);
-
-  // Build vocabulary and document frequency
-  const dfMap = new Map<string, number>();
-  const vocabSet = new Set<string>();
-
-  for (const tokens of tokenized) {
-    const seen = new Set<string>();
-    for (const t of tokens) {
-      vocabSet.add(t);
-      if (!seen.has(t)) {
-        seen.add(t);
-        dfMap.set(t, (dfMap.get(t) ?? 0) + 1);
-      }
-    }
-  }
-
-  // Assign indices
-  const vocab = new Map<string, number>();
-  let idx = 0;
-  for (const word of vocabSet) {
-    vocab.set(word, idx++);
-  }
-
-  const vocabSize = vocab.size;
-
-  // Compute IDF: log(N / df) + 1
-  const idf = new Float64Array(vocabSize);
-  for (const [word, wordIdx] of vocab) {
-    const df = dfMap.get(word) ?? 1;
-    idf[wordIdx] = Math.log(n / df) + 1;
-  }
-
-  // Compute TF-IDF vectors for each chunk
-  const vectors: Float64Array[] = tokenized.map((tokens) => {
-    const tf = new Map<string, number>();
-    for (const t of tokens) {
-      tf.set(t, (tf.get(t) ?? 0) + 1);
-    }
-    const vec = new Float64Array(vocabSize);
-    const maxTf = Math.max(...tf.values(), 1);
-    for (const [word, count] of tf) {
-      const wi = vocab.get(word);
-      if (wi !== undefined) {
-        // Normalized TF * IDF
-        vec[wi] = (count / maxTf) * idf[wi];
-      }
-    }
-    // L2 normalize
-    let norm = 0;
-    for (let i = 0; i < vocabSize; i++) norm += vec[i] * vec[i];
-    norm = Math.sqrt(norm);
-    if (norm > 0) {
-      for (let i = 0; i < vocabSize; i++) vec[i] /= norm;
-    }
-    return vec;
-  });
-
-  console.log("[RAG] TF-IDF index built: vocab size", vocabSize, "chunks", n);
-  return { vocab, idf, vectors };
-}
-
-/** Search chunks using TF-IDF cosine similarity */
-function tfidfSearch(
-  index: TFIDFIndex,
-  queryText: string,
-  chunks: string[],
-): SourceChunk[] {
-  const tokens = tokenize(queryText);
-  const { vocab, idf, vectors } = index;
-  const vocabSize = vocab.size;
-
-  // Build query vector
-  const tf = new Map<string, number>();
-  for (const t of tokens) {
-    tf.set(t, (tf.get(t) ?? 0) + 1);
-  }
-  const qVec = new Float64Array(vocabSize);
-  const maxTf = Math.max(...tf.values(), 1);
-  for (const [word, count] of tf) {
-    const wi = vocab.get(word);
-    if (wi !== undefined) {
-      qVec[wi] = (count / maxTf) * idf[wi];
-    }
-  }
-  // L2 normalize
-  let norm = 0;
-  for (let i = 0; i < vocabSize; i++) norm += qVec[i] * qVec[i];
-  norm = Math.sqrt(norm);
-  if (norm > 0) {
-    for (let i = 0; i < vocabSize; i++) qVec[i] /= norm;
-  }
-
-  // Cosine similarity with each chunk
-  const scored: SourceChunk[] = vectors.map((vec, i) => {
-    let dot = 0;
-    for (let j = 0; j < vocabSize; j++) dot += qVec[j] * vec[j];
-    return { index: i, text: chunks[i], score: dot };
-  });
-
-  scored.sort((a, b) => b.score - a.score);
-  return scored;
 }
 
 // ── Text extraction ───────────────────────────────────────────────────────────
