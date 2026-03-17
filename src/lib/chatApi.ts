@@ -7,7 +7,7 @@
 // fetchEmbeddingsFromServer — GETs all stored embeddings for a user
 // ─────────────────────────────────────────────────────────────────────────────
 
-const KES_BASE = "http://164.52.196.179/kes";
+const KES_BASE = "https://religionistic-ungnarled-ena.ngrok-free.dev/kes";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
